@@ -418,30 +418,53 @@ def main():
             st.divider()
             
             # Meal Logging Form
-            with st.container(border=True):
-                st.markdown(f"#### ➕ Add Meal to {view_date}")
-                f_name = st.text_input("Describe your meal", placeholder="e.g., Double cheeseburger no bun")
-                f_note = st.text_input("Note (Optional)", placeholder="e.g., Ate out, Snack at work")
-                
-                if st.button("Log Meal", type="primary"):
-                    if not f_name:
-                        st.warning("Please describe your food first.")
-                    else:
-                        with st.spinner("Analyzing..."):
-                            data = analyze_food_with_gemini(f_name, f_note, active_api_key)
-                            if data:
-                                conn = get_db_connection()
-                                conn.execute("""INSERT INTO food_logs 
-                                    (date, food_name, amount_desc, calories, protein, carbs, fats, fiber, sugar, sodium, nutrients, note) 
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                    (view_date, data['food_name'], f_name, 
-                                     data['calories'], data['protein'], data['carbs'], data['fats'],
-                                     data.get('fiber', 0), data.get('sugar', 0), data.get('sodium', 0),
-                                     data.get('micronutrients', ''), f_note))
-                                conn.commit()
-                                conn.close()
-                                st.success(f"Logged: {data['food_name']}")
-                                st.rerun()
+            # --- MEAL LOGGING ---
+with st.container(border=True):
+    st.markdown(f"#### ➕ Add Meal to {view_date}")
+    f_name = st.text_input("Describe your meal", placeholder="e.g., Double cheeseburger no bun")
+    f_note = st.text_input("Note (Optional)", placeholder="e.g., Ate out, Snack at work")
+    
+    if st.button("Log Meal", type="primary"):
+        if not f_name:
+            st.warning("Please describe your food first.")
+        else:
+            with st.spinner("Analyzing meal with Gemini..."):
+                data = analyze_food_with_gemini(f_name, f_note, active_api_key)
+                if data:
+                    # --- SAFE NUTRIENT PARSING ---
+                    calories = int(data.get('calories', 0) or 0)
+                    
+                    # Protein estimate: add safety check, min 1g if zero
+                    protein = int(data.get('protein', 0) or 0)
+                    if protein == 0 and calories > 0:
+                        # crude heuristic: 15-25% calories from protein if missing
+                        protein = max(1, round(calories * 0.2 / 4))
+                    
+                    carbs = int(data.get('carbs', 0) or 0)
+                    fats = int(data.get('fats', 0) or 0)
+                    fiber = int(data.get('fiber', 0) or 0)
+                    sugar = int(data.get('sugar', 0) or 0)
+                    sodium = int(data.get('sodium', 0) or 0)
+                    
+                    # --- DATABASE LOGGING ---
+                    conn = get_db_connection()
+                    conn.execute("""INSERT INTO food_logs 
+                        (date, food_name, amount_desc, calories, protein, carbs, fats, fiber, sugar, sodium, nutrients, note) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (view_date, 
+                         data.get('food_name', 'Unknown Food'), 
+                         f_name, 
+                         calories, protein, carbs, fats, 
+                         fiber, sugar, sodium, 
+                         data.get('micronutrients', ''), f_note))
+                    conn.commit()
+                    conn.close()
+                    
+                    st.success(f"Logged: {data.get('food_name', 'Unknown Food')}")
+                    st.rerun()
+                else:
+                    st.error("Could not analyze food. Try adjusting your description or check API key.")
+
 
         with col2:
             st.subheader("Logs")
