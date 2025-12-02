@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import json
 import re
+import os
 
 # --- CONFIGURATION & SETUP ---
 st.set_page_config(page_title="AI Macro Tracker", layout="wide", page_icon="🧬")
@@ -13,7 +14,7 @@ st.set_page_config(page_title="AI Macro Tracker", layout="wide", page_icon="🧬
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except (FileNotFoundError, KeyError):
-    # Fallback for local testing if secrets.toml isn't set up
+    # Fallback for local testing or if secrets aren't set
     API_KEY = "YOUR_API_KEY_HERE" 
 
 # --- DATABASE MANAGEMENT ---
@@ -134,7 +135,8 @@ def analyze_food_with_gemini(food_input, note, api_key):
         return None
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    # Switched to preview model for compatibility
+    model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
     
     prompt = f"""
     Analyze this food input: "{food_input}".
@@ -174,7 +176,7 @@ def get_food_suggestion(rem_cals, rem_prot, rem_carbs, rem_fats, api_key):
     if not api_key: return "API Key missing."
     
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
     
     prompt = f"""
     I have {rem_cals} calories left.
@@ -194,7 +196,7 @@ def get_weekly_analysis(week_data, goal, api_key):
     if not api_key: return "API Key missing."
     
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
     
     # week_data is a dictionary or string summary
     prompt = f"""
@@ -234,7 +236,10 @@ def main():
 
         # --- FETCH PROFILE DEFAULTS ---
         conn = get_db_connection()
-        profile = conn.execute("SELECT height_cm, weight_kg, bf_percent, activity_level, goal, diet_type FROM users WHERE id=1").fetchone()
+        try:
+            profile = conn.execute("SELECT height_cm, weight_kg, bf_percent, activity_level, goal, diet_type FROM users WHERE id=1").fetchone()
+        except sqlite3.OperationalError:
+             profile = None
         conn.close()
         
         # Default values if no profile exists
@@ -292,7 +297,10 @@ def main():
         
         # Fetch latest body stats for defaults
         conn = get_db_connection()
-        last_stat = conn.execute("SELECT weight_kg, bf_percent FROM body_stats ORDER BY date DESC LIMIT 1").fetchone()
+        try:
+            last_stat = conn.execute("SELECT weight_kg, bf_percent FROM body_stats ORDER BY date DESC LIMIT 1").fetchone()
+        except:
+            last_stat = None
         conn.close()
         
         # Use latest log if available, otherwise use profile weight
@@ -316,7 +324,10 @@ def main():
 
     # --- LOAD USER DATA ---
     conn = get_db_connection()
-    user_data = conn.execute("SELECT target_calories, target_protein, target_carbs, target_fats, goal FROM users WHERE id=1").fetchone()
+    try:
+        user_data = conn.execute("SELECT target_calories, target_protein, target_carbs, target_fats, goal FROM users WHERE id=1").fetchone()
+    except:
+        user_data = None
     conn.close()
 
     if not user_data:
@@ -334,7 +345,10 @@ def main():
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     
     conn = get_db_connection()
-    y_stats = conn.execute("SELECT SUM(calories) FROM food_logs WHERE date = ?", (yesterday,)).fetchone()
+    try:
+        y_stats = conn.execute("SELECT SUM(calories) FROM food_logs WHERE date = ?", (yesterday,)).fetchone()
+    except:
+        y_stats = None
     conn.close()
     
     y_cals = y_stats[0] if y_stats and y_stats[0] else 0
@@ -417,53 +431,53 @@ def main():
 
             st.divider()
             
-            # Meal Logging Form
+            # Meal Logging Form - NOW PROPERLY INDENTED INSIDE COL1
             # --- MEAL LOGGING ---
-with st.container(border=True):
-    st.markdown(f"#### ➕ Add Meal to {view_date}")
-    f_name = st.text_input("Describe your meal", placeholder="e.g., Double cheeseburger no bun")
-    f_note = st.text_input("Note (Optional)", placeholder="e.g., Ate out, Snack at work")
-    
-    if st.button("Log Meal", type="primary"):
-        if not f_name:
-            st.warning("Please describe your food first.")
-        else:
-            with st.spinner("Analyzing meal with Gemini..."):
-                data = analyze_food_with_gemini(f_name, f_note, active_api_key)
-                if data:
-                    # --- SAFE NUTRIENT PARSING ---
-                    calories = int(data.get('calories', 0) or 0)
-                    
-                    # Protein estimate: add safety check, min 1g if zero
-                    protein = int(data.get('protein', 0) or 0)
-                    if protein == 0 and calories > 0:
-                        # crude heuristic: 15-25% calories from protein if missing
-                        protein = max(1, round(calories * 0.2 / 4))
-                    
-                    carbs = int(data.get('carbs', 0) or 0)
-                    fats = int(data.get('fats', 0) or 0)
-                    fiber = int(data.get('fiber', 0) or 0)
-                    sugar = int(data.get('sugar', 0) or 0)
-                    sodium = int(data.get('sodium', 0) or 0)
-                    
-                    # --- DATABASE LOGGING ---
-                    conn = get_db_connection()
-                    conn.execute("""INSERT INTO food_logs 
-                        (date, food_name, amount_desc, calories, protein, carbs, fats, fiber, sugar, sodium, nutrients, note) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (view_date, 
-                         data.get('food_name', 'Unknown Food'), 
-                         f_name, 
-                         calories, protein, carbs, fats, 
-                         fiber, sugar, sodium, 
-                         data.get('micronutrients', ''), f_note))
-                    conn.commit()
-                    conn.close()
-                    
-                    st.success(f"Logged: {data.get('food_name', 'Unknown Food')}")
-                    st.rerun()
-                else:
-                    st.error("Could not analyze food. Try adjusting your description or check API key.")
+            with st.container(border=True):
+                st.markdown(f"#### ➕ Add Meal to {view_date}")
+                f_name = st.text_input("Describe your meal", placeholder="e.g., Double cheeseburger no bun")
+                f_note = st.text_input("Note (Optional)", placeholder="e.g., Ate out, Snack at work")
+                
+                if st.button("Log Meal", type="primary"):
+                    if not f_name:
+                        st.warning("Please describe your food first.")
+                    else:
+                        with st.spinner("Analyzing meal with Gemini..."):
+                            data = analyze_food_with_gemini(f_name, f_note, active_api_key)
+                            if data:
+                                # --- SAFE NUTRIENT PARSING ---
+                                calories = int(data.get('calories', 0) or 0)
+                                
+                                # Protein estimate: add safety check, min 1g if zero
+                                protein = int(data.get('protein', 0) or 0)
+                                if protein == 0 and calories > 0:
+                                    # crude heuristic: 15-25% calories from protein if missing
+                                    protein = max(1, round(calories * 0.2 / 4))
+                                
+                                carbs = int(data.get('carbs', 0) or 0)
+                                fats = int(data.get('fats', 0) or 0)
+                                fiber = int(data.get('fiber', 0) or 0)
+                                sugar = int(data.get('sugar', 0) or 0)
+                                sodium = int(data.get('sodium', 0) or 0)
+                                
+                                # --- DATABASE LOGGING ---
+                                conn = get_db_connection()
+                                conn.execute("""INSERT INTO food_logs 
+                                    (date, food_name, amount_desc, calories, protein, carbs, fats, fiber, sugar, sodium, nutrients, note) 
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                    (view_date, 
+                                     data.get('food_name', 'Unknown Food'), 
+                                     f_name, 
+                                     calories, protein, carbs, fats, 
+                                     fiber, sugar, sodium, 
+                                     data.get('micronutrients', ''), f_note))
+                                conn.commit()
+                                conn.close()
+                                
+                                st.success(f"Logged: {data.get('food_name', 'Unknown Food')}")
+                                st.rerun()
+                            else:
+                                st.error("Could not analyze food. Try adjusting your description or check API key.")
 
 
         with col2:
@@ -509,7 +523,7 @@ with st.container(border=True):
         # Calculate stats specifically for TODAY
         conn = get_db_connection()
         today_stats = conn.execute("""SELECT SUM(calories), SUM(protein), SUM(carbs), SUM(fats) 
-                                FROM food_logs WHERE date = ?""", (today,)).fetchone()
+                                      FROM food_logs WHERE date = ?""", (today,)).fetchone()
         
         # Get last 7 days for weekly analysis
         week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -560,10 +574,17 @@ with st.container(border=True):
         conn = get_db_connection()
         
         # 1. Nutrition Data
-        df_food = pd.read_sql_query("SELECT date, SUM(calories) as calories, SUM(protein) as protein, SUM(fiber) as fiber FROM food_logs GROUP BY date ORDER BY date", conn)
-        
+        try:
+            df_food = pd.read_sql_query("SELECT date, SUM(calories) as calories, SUM(protein) as protein, SUM(fiber) as fiber FROM food_logs GROUP BY date ORDER BY date", conn)
+        except:
+            df_food = pd.DataFrame()
+
         # 2. Body Data
-        df_body = pd.read_sql_query("SELECT date, weight_kg, bf_percent FROM body_stats ORDER BY date", conn)
+        try:
+            df_body = pd.read_sql_query("SELECT date, weight_kg, bf_percent FROM body_stats ORDER BY date", conn)
+        except:
+            df_body = pd.DataFrame()
+            
         conn.close()
         
         if df_food.empty and df_body.empty:
