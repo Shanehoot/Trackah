@@ -277,6 +277,10 @@ def main():
         return
         
     base_cals, t_prot, t_carbs, t_fats, user_goal = user_data
+    
+    # SAFEGUARD: Handle NoneType for user_goal if DB migration added null columns to existing row
+    if user_goal is None:
+        user_goal = "Maintain / Recomp"
 
     # --- DATE HANDLING & COMPENSATION ---
     today = datetime.now().strftime("%Y-%m-%d")
