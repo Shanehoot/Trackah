@@ -156,7 +156,16 @@ def analyze_food_with_gemini(food_input, note, api_key):
     """
     try:
         response = model.generate_content(prompt)
-        return extract_json(response.text)
+        data = extract_json(response.text)
+        
+        # SAFEGUARD: Handle case where AI returns a list [{}, {}] instead of a single dict {}
+        if isinstance(data, list):
+            if len(data) > 0:
+                return data[0]
+            else:
+                return None
+                
+        return data
     except Exception as e:
         st.error(f"AI Error: {e}")
         return None
@@ -223,17 +232,45 @@ def main():
             active_api_key = API_KEY
             st.success("API Key loaded from secrets")
 
+        # --- FETCH PROFILE DEFAULTS ---
+        conn = get_db_connection()
+        profile = conn.execute("SELECT height_cm, weight_kg, bf_percent, activity_level, goal, diet_type FROM users WHERE id=1").fetchone()
+        conn.close()
+        
+        # Default values if no profile exists
+        p_h, p_w, p_bf = 175.0, 70.0, 20.0
+        p_act, p_goal, p_diet = "Sedentary", "Maintain / Recomp", "Balanced"
+        
+        if profile:
+            # Handle potential None values if migration just happened
+            p_h = profile[0] if profile[0] else 175.0
+            p_w = profile[1] if profile[1] else 70.0
+            p_bf = profile[2] if profile[2] else 20.0
+            p_act = profile[3] if profile[3] else "Sedentary"
+            p_goal = profile[4] if profile[4] else "Maintain / Recomp"
+            p_diet = profile[5] if profile[5] else "Balanced"
+
         st.divider()
         st.header("User Profile")
         with st.form("profile_form"):
-            weight = st.number_input("Weight (kg)", value=70.0)
-            height = st.number_input("Height (cm)", value=175.0)
-            bf = st.number_input("Body Fat %", value=20.0)
-            activity = st.selectbox("Activity Level", ["Sedentary", "Lightly Active", "Moderately Active", "Very Active"])
+            weight = st.number_input("Weight (kg)", value=float(p_w))
+            height = st.number_input("Height (cm)", value=float(p_h))
+            bf = st.number_input("Body Fat %", value=float(p_bf))
+            
+            # Helper to find index safely
+            def get_index(options, val):
+                try: return options.index(val)
+                except: return 0
+                
+            act_opts = ["Sedentary", "Lightly Active", "Moderately Active", "Very Active"]
+            activity = st.selectbox("Activity Level", act_opts, index=get_index(act_opts, p_act))
             
             st.subheader("Goals")
-            goal = st.selectbox("Primary Goal", ["Maintain / Recomp", "Lose Weight", "Gain Muscle"])
-            diet_type = st.selectbox("Diet Preference", ["Balanced", "High Protein", "Keto"])
+            goal_opts = ["Maintain / Recomp", "Lose Weight", "Gain Muscle"]
+            goal = st.selectbox("Primary Goal", goal_opts, index=get_index(goal_opts, p_goal))
+            
+            diet_opts = ["Balanced", "High Protein", "Keto"]
+            diet_type = st.selectbox("Diet Preference", diet_opts, index=get_index(diet_opts, p_diet))
             
             if st.form_submit_button("Update Targets"):
                 cals, prot, carbs, fats = calculate_macros(weight, height, bf, activity, goal, diet_type)
@@ -252,11 +289,21 @@ def main():
         # --- LOG BODY STATS ---
         st.divider()
         st.header("Log Body Stats")
+        
+        # Fetch latest body stats for defaults
+        conn = get_db_connection()
+        last_stat = conn.execute("SELECT weight_kg, bf_percent FROM body_stats ORDER BY date DESC LIMIT 1").fetchone()
+        conn.close()
+        
+        # Use latest log if available, otherwise use profile weight
+        last_w = last_stat[0] if last_stat else p_w
+        last_bf = last_stat[1] if last_stat else p_bf
+
         with st.expander("Record Weigh-in"):
             with st.form("weight_log"):
                 log_date = st.date_input("Date", value=datetime.now())
-                log_weight = st.number_input("Current Weight (kg)", value=weight)
-                log_bf = st.number_input("Current BF % (optional)", value=bf)
+                log_weight = st.number_input("Current Weight (kg)", value=float(last_w))
+                log_bf = st.number_input("Current BF % (optional)", value=float(last_bf))
                 
                 if st.form_submit_button("Log Stats"):
                     conn = get_db_connection()
