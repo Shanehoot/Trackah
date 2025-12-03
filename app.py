@@ -178,6 +178,60 @@ def analyze_food_with_gemini(food_input, note, api_key):
         st.error(f"AI Error: {e}")
         return None
 
+def analyze_image_with_gemini(image_bytes, note, api_key):
+    if not api_key or "YOUR_API_KEY" in api_key:
+        st.error("Please provide a valid API Key.")
+        return None
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    
+    prompt = f"""
+    You are a nutritionist AI. Look at this food image and estimate its nutritional content.
+    Context note: "{note}" (use this to refine portion or ingredients).
+
+    Return ONLY a JSON with this structure:
+
+    {{
+        "food_name": "Short concise name",
+        "calories": int,
+        "protein": int,
+        "carbs": int,
+        "sugar": int,
+        "fiber": int,
+        "total_fats": int,
+        "saturated_fat": int,
+        "sodium": int,
+        "vitamin_a": int,       # µg
+        "vitamin_c": int,       # mg
+        "vitamin_d": int,       # µg
+        "calcium": int,         # mg
+        "iron": int,            # mg
+        "potassium": int,       # mg
+        "magnesium": int,       # mg
+        "zinc": int             # mg
+    }}
+    
+    Provide reasonable estimates based on visual portion size.
+    """
+    
+    image_parts = [
+        {
+            "mime_type": "image/jpeg",
+            "data": image_bytes
+        }
+    ]
+    
+    try:
+        response = model.generate_content([prompt, image_parts[0]])
+        data = extract_json(response.text)
+        if isinstance(data, list) and len(data) > 0:
+            return data[0]
+        return data
+    except Exception as e:
+        st.error(f"AI Error: {e}")
+        return None
+
 def analyze_planned_meal(planned_food, current_status, targets, api_key):
     if not api_key: return "API Key missing."
     genai.configure(api_key=api_key)
@@ -368,7 +422,7 @@ def main():
     daily_target_cals = base_cals # Simplified for brevity
 
     # --- TABS ---
-    tab1, tab2 = st.tabs(["Daily Tracker", "AI Coach"])
+    tab1, tab2, tab3 = st.tabs(["Daily Tracker", "AI Coach", "Photo Log"])
 
     # --- TAB 1: DAILY TRACKER ---
     with tab1:
@@ -585,6 +639,40 @@ def main():
             
         else:
             st.info("No data logged for the past 7 days.")
+
+    # --- TAB 3: PHOTO LOG ---
+    with tab3:
+        st.markdown("### <span class='icon'>photo_camera</span> Photo Food Logger", unsafe_allow_html=True)
+        
+        cam_col, review_col = st.columns([1, 1])
+        
+        with cam_col:
+            img_file = st.camera_input("Take a photo of your meal")
+        
+        with review_col:
+            if img_file:
+                bytes_data = img_file.getvalue()
+                st.image(bytes_data, caption="Captured Image", use_column_width=True)
+                
+                p_note = st.text_input("Notes for Photo Log", placeholder="e.g. Homemade, light oil")
+                
+                if st.button("Analyze & Log Photo", type="primary"):
+                    with st.spinner("Analyzing image..."):
+                        data = analyze_image_with_gemini(bytes_data, p_note, active_api_key)
+                        if data:
+                            # Show Preview
+                            st.success(f"Identified: {data.get('food_name')}")
+                            st.json(data)
+                            
+                            # Log to DB
+                            conn = get_db_connection()
+                            conn.execute("""INSERT INTO food_logs (date, food_name, amount_desc, calories, protein, carbs, sugar, fiber, fats, saturated_fat, sodium, vitamin_a, vitamin_c, vitamin_d, calcium, iron, potassium, magnesium, zinc, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                    (today, data['food_name'], "Photo Log", data['calories'], data['protein'], data['carbs'], data['sugar'], data['fiber'], data['total_fats'], data['saturated_fat'], data['sodium'], data['vitamin_a'], data['vitamin_c'], data['vitamin_d'], data['calcium'], data['iron'], data['potassium'], data['magnesium'], data['zinc'], p_note))
+                            conn.commit()
+                            conn.close()
+                            st.toast("Meal logged successfully!")
+                        else:
+                            st.error("Could not analyze image.")
 
 if __name__ == "__main__":
     main()
