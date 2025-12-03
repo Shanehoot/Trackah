@@ -457,8 +457,8 @@ def main():
                                 conn.commit(); conn.close(); st.rerun()
                         st.markdown(f"""
                         <div style='display:flex; gap:20px; margin:10px 0;'>
-                            <span style='color:#4caf50; font-weight:bold;'><span class='icon'>fitness_center</span>{log[3]}g</span>
-                            <span style='color:#ff5722; font-weight:bold;'><span class='icon'>local_fire_department</span>{log[2]}</span>
+                            <span style='color:#4caf50; font-weight:bold; font-size: 1.1em;'><span class='icon'>fitness_center</span>{log[3]}g</span>
+                            <span style='color:#ff5722; font-weight:bold; font-size: 1.1em;'><span class='icon'>local_fire_department</span>{log[2]}</span>
                         </div>
                         <div style='font-size:0.85em; color:#555;'>C:{log[4]}g F:{log[5]}g (Sat:{log[9]}g) Fib:{log[6]}g Sug:{log[7]}g Sod:{log[8]}mg</div>
                         """, unsafe_allow_html=True)
@@ -466,7 +466,7 @@ def main():
 
     # --- TAB 2: AI COACH ---
     with tab2:
-        st.subheader("🤖 AI Nutrition Coach")
+        st.markdown("### <span class='icon'>smart_toy</span> AI Nutrition Coach", unsafe_allow_html=True)
         
         # 1. TOP: MEAL ANALYSIS & CURRENT STATUS
         conn = get_db_connection()
@@ -491,7 +491,7 @@ def main():
         targets = {'cals': daily_target_cals, 'prot': t_prot, 'carbs': t_carbs, 'fats': t_fats}
 
         with st.container(border=True):
-            st.markdown("#### 🔮 Analyze Planned Meal")
+            st.markdown("#### <span class='icon'>psychology_alt</span> Analyze Planned Meal", unsafe_allow_html=True)
             st.markdown(f"**Current Status:** {cur_status['cals']}/{daily_target_cals} Cals • {cur_status['prot']}/{t_prot}g Protein")
             
             c_input, c_btn = st.columns([3, 1])
@@ -499,16 +499,18 @@ def main():
             with c_btn: 
                 st.write("")
                 st.write("")
-                if st.button("Ask Coach", type="primary"):
-                    if planned:
-                        with st.spinner("Analyzing fit..."):
-                            advice = analyze_planned_meal(planned, cur_status, targets, active_api_key)
-                            st.markdown(advice)
+                ask_coach = st.button("Ask Coach", type="primary")
+                
+            if ask_coach:
+                if planned:
+                    with st.spinner("Analyzing fit..."):
+                        advice = analyze_planned_meal(planned, cur_status, targets, active_api_key)
+                        st.markdown(advice)
 
         st.divider()
 
         # 2. MIDDLE: CONSISTENCY TRACKER
-        st.markdown("#### 🏆 Consistency Tracker (All Time)")
+        st.markdown("#### <span class='icon'>trophy</span> Consistency Tracker (All Time)", unsafe_allow_html=True)
         
         if not df_all.empty:
             avg_cals = df_all['calories'].mean()
@@ -522,7 +524,7 @@ def main():
             def diff_metric(col, label, val, target, unit):
                 diff = val - target
                 delta_str = f"{diff:+.0f} {unit}"
-                col.metric(label, f"{val:.0f} {unit}", delta_str, delta_color="inverse" if label=="Calories" or label=="Carbs" or label=="Fats" else "normal") # Simple logic for coloring
+                col.metric(label, f"{val:.0f} {unit}", delta_str, delta_color="inverse" if label=="Calories" or label=="Carbs" or label=="Fats" else "normal")
 
             diff_metric(col_a, "Avg Calories", avg_cals, daily_target_cals, "")
             diff_metric(col_b, "Avg Protein", avg_prot, t_prot, "g")
@@ -540,7 +542,7 @@ def main():
         st.divider()
 
         # 3. BOTTOM: WEEKLY REPORT & WINDOWS
-        st.markdown("#### 📅 Weekly Report")
+        st.markdown("#### <span class='icon'>calendar_month</span> Weekly Report", unsafe_allow_html=True)
         
         if not week_logs.empty:
             # Calculate Weekly Averages
@@ -565,16 +567,16 @@ def main():
             w1, w2, w3, w4 = st.columns(4)
             
             def render_window(col, title, val, target, unit):
-                status = "🟢 On Track"
-                if val > target * 1.1: status = "🔴 Over"
-                elif val < target * 0.9: status = "🟠 Under"
+                status = "<span class='icon' style='color:green'>check_circle</span> On Track"
+                if val > target * 1.1: status = "<span class='icon' style='color:red'>error</span> Over"
+                elif val < target * 0.9: status = "<span class='icon' style='color:orange'>warning</span> Under"
                 
                 with col:
                     with st.container(border=True):
                         st.markdown(f"**{title}**")
                         st.markdown(f"Avg: {val:.0f}{unit}")
                         st.caption(f"Target: {target}{unit}")
-                        st.markdown(f"**{status}**")
+                        st.markdown(f"**{status}**", unsafe_allow_html=True)
 
             render_window(w1, "Calories", w_avg_cals, daily_target_cals, "")
             render_window(w2, "Protein", w_avg_prot, t_prot, "g")
