@@ -43,6 +43,7 @@ def init_db():
         pass
 
     # Food logs table - EXPANDED for new fields
+    # Note: We use 'fats' to store 'total_fats' to maintain consistency with existing schema
     c.execute('''CREATE TABLE IF NOT EXISTS food_logs 
                  (id INTEGER PRIMARY KEY, date TEXT, food_name TEXT, 
                   amount_desc TEXT, calories INTEGER, 
@@ -129,19 +130,26 @@ def calculate_macros(weight, height, bf_percent, activity_level, goal, diet_type
 
 # --- AI INTEGRATION ---
 def analyze_food_with_gemini(food_input, note, api_key):
+    """
+    Analyze a meal description with optional notes.
+    Returns a dictionary with estimated macros and key micronutrients.
+    """
     if not api_key or "YOUR_API_KEY" in api_key:
         st.error("Please provide a valid API Key.")
         return None
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
+    model = genai.GenerativeModel('gemini-2.0-flash')
     
+    # Updated prompt for full macro & micro assessment
     prompt = f"""
-    Analyze this food input: "{food_input}".
+    You are a nutritionist AI. Analyze the following food input and estimate its nutritional content
+    based on typical serving sizes and standard data.
+
+    Food description: "{food_input}"
     Context note: "{note}" (use this to understand portion or type if vague).
 
-    Estimate the nutritional content based on standard data.
-    Return ONLY a raw JSON string with this structure:
+    Return ONLY a JSON with this structure:
 
     {{
         "food_name": "Short concise name",
@@ -162,12 +170,18 @@ def analyze_food_with_gemini(food_input, note, api_key):
         "magnesium": int,       # mg
         "zinc": int             # mg
     }}
+
+    Provide reasonable estimates for all fields.
     """
+    
     try:
         response = model.generate_content(prompt)
         data = extract_json(response.text)
-        if isinstance(data, list):
-            return data[0] if len(data) > 0 else None
+        
+        # Safeguard if Gemini returns a list
+        if isinstance(data, list) and len(data) > 0:
+            return data[0]
+        
         return data
     except Exception as e:
         st.error(f"AI Error: {e}")
@@ -562,6 +576,7 @@ def main():
             st.subheader("Logs")
             
             conn = get_db_connection()
+            # Fetch all columns needed
             logs = conn.execute("""
                 SELECT id, food_name, calories, protein, carbs, fats, fiber, sugar, sodium, saturated_fat, note 
                 FROM food_logs WHERE date = ? ORDER BY id DESC
@@ -590,18 +605,19 @@ def main():
                                 conn.close()
                                 st.rerun()
 
-                        # Main Stats (Big)
+                        # Main Stats (Big) - Added margin via style
                         st.markdown(f"""
-                        <div style='display:flex; gap:15px; align-items:center; margin-bottom:5px;'>
-                            <span style='color:#4caf50; font-weight:bold;'><span class='icon'>fitness_center</span>{prot}g</span>
-                            <span style='color:#ff5722; font-weight:bold;'><span class='icon'>local_fire_department</span>{cal}</span>
+                        <div style='display:flex; gap:20px; align-items:center; margin-top: 10px; margin-bottom:15px;'>
+                            <span style='color:#4caf50; font-weight:bold; font-size: 1.1em;'><span class='icon'>fitness_center</span>{prot}g</span>
+                            <span style='color:#ff5722; font-weight:bold; font-size: 1.1em;'><span class='icon'>local_fire_department</span>{cal}</span>
                         </div>
                         """, unsafe_allow_html=True)
 
                         # Other Macros (Small)
                         st.markdown(f"""
-                        <div style='font-size: 0.85rem; color: #555;'>
-                            C:{carb}g F:{fat}g (Sat:{sat_fat}g) Fib:{fib}g Sug:{sug}g Sod:{sod}mg
+                        <div style='font-size: 0.85rem; color: #555; line-height: 1.4;'>
+                            <b>C:</b> {carb}g &nbsp; <b>F:</b> {fat}g (Sat: {sat_fat}g) <br>
+                            <b>Fib:</b> {fib}g &nbsp; <b>Sug:</b> {sug}g &nbsp; <b>Sod:</b> {sod}mg
                         </div>
                         """, unsafe_allow_html=True)
                         
