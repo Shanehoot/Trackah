@@ -225,11 +225,111 @@ def get_weekly_analysis(week_data, goal, api_key):
     except Exception as e:
         return f"Could not generate analysis: {e}"
 
+# --- CUSTOM STYLING (THEME INJECTION) ---
+def inject_custom_css():
+    st.markdown("""
+    <style>
+        /* COLOR PALETTE */
+        :root {
+            --bg-cream: #F3F0E8;
+            --text-dark: #1E2F23;
+            --accent-pink: #E882B3;
+            --accent-pink-dark: #D16B99;
+            --accent-green: #2F4F38;
+            --card-white: #FFFFFF;
+        }
+
+        /* MAIN BACKGROUND */
+        .stApp {
+            background-color: var(--bg-cream);
+        }
+
+        /* TYPOGRAPHY */
+        h1, h2, h3, h4, .stMarkdown {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            color: var(--text-dark) !important;
+        }
+        
+        h1 {
+            font-weight: 800;
+            font-size: 3rem;
+            letter-spacing: -1px;
+        }
+
+        /* BUTTONS (Pill Shaped) */
+        .stButton > button {
+            background-color: var(--accent-pink);
+            color: white;
+            border-radius: 50px;
+            border: none;
+            padding: 12px 28px;
+            font-weight: 700;
+            font-size: 16px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+        .stButton > button:hover {
+            background-color: var(--accent-pink-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 8px rgba(0,0,0,0.15);
+        }
+        
+        /* INPUT FIELDS (Rounded) */
+        .stTextInput > div > div > input {
+            border-radius: 20px;
+            border: 2px solid #E0E0E0;
+            padding: 10px 15px;
+            background-color: var(--card-white);
+        }
+        .stTextInput > div > div > input:focus {
+            border-color: var(--accent-pink);
+        }
+
+        /* CARDS / CONTAINERS (Rounded & Soft) */
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-radius: 30px;
+            background-color: var(--card-white);
+            border: none;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.05);
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+        
+        /* PROGRESS BARS */
+        .stProgress > div > div > div > div {
+            background-color: var(--accent-green);
+        }
+        
+        /* TABS */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 10px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            background-color: transparent;
+            border-radius: 20px;
+            padding: 10px 20px;
+            color: var(--text-dark);
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: var(--text-dark);
+            color: white !important;
+        }
+
+        /* METRICS */
+        div[data-testid="stMetricValue"] {
+            font-weight: 800;
+            color: var(--accent-green);
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
 # --- MAIN APP ---
 def main():
+    inject_custom_css() # Inject the Marshmallow-style theme
     init_db()
     
-    st.title("🧬 AI Body Recomposition Tracker")
+    # st.title removed here to let custom CSS handle headers more cleanly, usually just use markdown headers
+    st.markdown("# 🧬 AI Body Recomposition Tracker")
 
     # --- SIDEBAR: CONFIG ---
     with st.sidebar:
@@ -419,16 +519,17 @@ def main():
                 st.markdown(f"""
                 <div style="margin-bottom: 5px;">
                     <span title="{tooltip}">{label}: <b>{val}g</b> / {target}g</span>
-                    <div style="background-color: #e0e0e0; border-radius: 5px; height: 10px; width: 100%;">
-                        <div style="background-color: {color_hex}; width: {pct}%; height: 100%; border-radius: 5px;"></div>
+                    <div style="background-color: #E6E2D8; border-radius: 10px; height: 12px; width: 100%;">
+                        <div style="background-color: {color_hex}; width: {pct}%; height: 100%; border-radius: 10px;"></div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
             
             c_m1, c_m2, c_m3 = st.columns(3)
-            with c_m1: color_bar("Protein", c_prot, t_prot, "#4CAF50", "Crucial for muscle repair and growth.")
-            with c_m2: color_bar("Carbs", c_carb, t_carbs, "#2196F3", "Primary energy source.")
-            with c_m3: color_bar("Fats", c_fat, t_fats, "#FFC107", "Essential for hormone regulation.")
+            # Updated colors to match theme better
+            with c_m1: color_bar("Protein", c_prot, t_prot, "#2F4F38", "Crucial for muscle repair and growth.") # Dark Green
+            with c_m2: color_bar("Carbs", c_carb, t_carbs, "#7D9068", "Primary energy source.") # Muted Green
+            with c_m3: color_bar("Fats", c_fat, t_fats, "#D16B99", "Essential for hormone regulation.") # Dark Pink
             
             # 3. Micro Nutrient Dashboard
             st.markdown("---")
@@ -493,30 +594,63 @@ def main():
             st.subheader("Logs")
             
             conn = get_db_connection()
-            # Fetch logs including note
-            logs = conn.execute("SELECT id, food_name, calories, protein, carbs, fats, note FROM food_logs WHERE date = ? ORDER BY id DESC", (view_date,)).fetchall()
+            # Fetch logs including note AND new columns
+            logs = conn.execute("""
+                SELECT id, food_name, calories, protein, carbs, fats, fiber, sugar, sodium, nutrients, note 
+                FROM food_logs 
+                WHERE date = ? 
+                ORDER BY id DESC
+            """, (view_date,)).fetchall()
             conn.close()
             
             if not logs:
                 st.info(f"No meals logged for {view_date}.")
             else:
                 for log in logs:
-                    log_id, name, cal, prot, carb, fat, note = log
+                    log_id, name, cal, prot, carb, fat, fib, sug, sod, micro, note = log
+                    
+                    # Default values for potentially NULL columns
+                    fib = fib or 0
+                    sug = sug or 0
+                    sod = sod or 0
+                    micro = micro or ""
                     
                     with st.container(border=True):
-                        c1, c2 = st.columns([4, 1])
-                        with c1:
-                            st.markdown(f"**{name}**")
-                            if note:
-                                st.caption(f"📝 *{note}*")
-                            st.caption(f"🔥 {cal} | P:{prot} C:{carb} F:{fat}")
-                        with c2:
+                        # Header Row: Name + Delete Button
+                        row1_col1, row1_col2 = st.columns([5, 1])
+                        with row1_col1:
+                            st.markdown(f"### {name}")
+                        with row1_col2:
                             if st.button("🗑️", key=f"del_{log_id}"):
                                 conn = get_db_connection()
                                 conn.execute("DELETE FROM food_logs WHERE id = ?", (log_id,))
                                 conn.commit()
                                 conn.close()
                                 st.rerun()
+
+                        # Main Macros (Large Font)
+                        row2_col1, row2_col2 = st.columns(2)
+                        with row2_col1:
+                            st.markdown(f"<div style='font-size: 1.2rem; font-weight: bold; color: #2F4F38;'>🥩 {prot}g Protein</div>", unsafe_allow_html=True)
+                        with row2_col2:
+                             st.markdown(f"<div style='font-size: 1.2rem; font-weight: bold; color: #E882B3;'>🔥 {cal} Kcal</div>", unsafe_allow_html=True)
+
+                        # Secondary Macros (Small Font)
+                        st.markdown(f"""
+                        <div style='font-size: 0.9rem; color: #555; margin-top: 5px; margin-bottom: 5px;'>
+                            <b>Carbs:</b> {carb}g &nbsp;•&nbsp; 
+                            <b>Fats:</b> {fat}g &nbsp;•&nbsp; 
+                            <b>Fiber:</b> {fib}g &nbsp;•&nbsp; 
+                            <b>Sugar:</b> {sug}g &nbsp;•&nbsp; 
+                            <b>Sodium:</b> {sod}mg
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Micronutrients & Notes
+                        if micro:
+                            st.caption(f"✨ {micro}")
+                        if note:
+                            st.caption(f"📝 {note}")
                 
                 if st.button(f"Clear Day", type="secondary"):
                     conn = get_db_connection()
