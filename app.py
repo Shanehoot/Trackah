@@ -27,7 +27,7 @@ def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     
-    # Users table - Updated for new preferences
+    # Users table
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (id INTEGER PRIMARY KEY, height_cm REAL, weight_kg REAL, 
                   bf_percent REAL, activity_level TEXT, 
@@ -35,32 +35,39 @@ def init_db():
                   target_calories REAL, target_protein REAL, 
                   target_carbs REAL, target_fats REAL)''')
     
-    # Migration for users table if goal/diet_type missing
+    # Migration for users table
     try:
         c.execute("ALTER TABLE users ADD COLUMN goal TEXT")
         c.execute("ALTER TABLE users ADD COLUMN diet_type TEXT")
     except sqlite3.OperationalError:
         pass
 
-    # Food logs table - Updated for micro nutrients and notes
+    # Food logs table - EXPANDED for new fields
     c.execute('''CREATE TABLE IF NOT EXISTS food_logs 
                  (id INTEGER PRIMARY KEY, date TEXT, food_name TEXT, 
                   amount_desc TEXT, calories INTEGER, 
                   protein INTEGER, carbs INTEGER, fats INTEGER, 
                   fiber INTEGER, sugar INTEGER, sodium INTEGER,
+                  saturated_fat INTEGER, 
+                  vitamin_a INTEGER, vitamin_c INTEGER, vitamin_d INTEGER,
+                  calcium INTEGER, iron INTEGER, potassium INTEGER, 
+                  magnesium INTEGER, zinc INTEGER,
                   nutrients TEXT, note TEXT)''')
     
-    # Migration for food_logs
-    columns_to_add = ["fiber", "sugar", "sodium", "note"]
-    for col in columns_to_add:
+    # Migration for food_logs - Add all new columns if they don't exist
+    new_cols = [
+        "fiber", "sugar", "sodium", "note", "saturated_fat", 
+        "vitamin_a", "vitamin_c", "vitamin_d", 
+        "calcium", "iron", "potassium", "magnesium", "zinc"
+    ]
+    for col in new_cols:
         try:
-            # Type handling for alteration is simple in sqlite
             col_type = "TEXT" if col == "note" else "INTEGER"
             c.execute(f"ALTER TABLE food_logs ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
 
-    # Body Stats table - NEW
+    # Body Stats table
     c.execute('''CREATE TABLE IF NOT EXISTS body_stats 
                  (id INTEGER PRIMARY KEY, date TEXT, weight_kg REAL, bf_percent REAL)''')
     
@@ -69,9 +76,6 @@ def init_db():
 
 # --- UTILITIES ---
 def extract_json(text):
-    """
-    Robustly extracts JSON from AI response.
-    """
     try:
         clean_text = text.strip()
         if clean_text.startswith("```json"):
@@ -98,29 +102,24 @@ def calculate_macros(weight, height, bf_percent, activity_level, goal, diet_type
     }
     tdee = bmr * activity_multipliers.get(activity_level, 1.2)
     
-    # 1. Adjust for Goal
     if goal == "Lose Weight":
-        target_calories = round(tdee - 500) # Standard deficit
+        target_calories = round(tdee - 500)
     elif goal == "Gain Muscle":
-        target_calories = round(tdee + 300) # Lean bulk surplus
-    else: # Maintenance / Recomp
+        target_calories = round(tdee + 300)
+    else:
         target_calories = round(tdee)
     
-    # 2. Adjust for Diet Type (Macro Split)
     if diet_type == "Keto":
-        target_carbs = 30 # Hard cap
+        target_carbs = 30
         target_protein = round(lean_mass_kg * 2.0)
-        # Remainder fats
         rem_cals = target_calories - ((target_protein * 4) + (target_carbs * 4))
         target_fats = round(max(0, rem_cals / 9))
-        
     elif diet_type == "High Protein":
-        target_protein = round(lean_mass_kg * 2.6) # Very high
+        target_protein = round(lean_mass_kg * 2.6)
         target_fats = round(weight * 0.9)
         rem_cals = target_calories - ((target_protein * 4) + (target_fats * 9))
         target_carbs = round(max(0, rem_cals / 4))
-        
-    else: # Balanced / Standard Recomp
+    else:
         target_protein = round(lean_mass_kg * 2.2)
         target_fats = round(weight * 0.8)
         rem_cals = target_calories - ((target_protein * 4) + (target_fats * 9))
@@ -135,65 +134,60 @@ def analyze_food_with_gemini(food_input, note, api_key):
         return None
 
     genai.configure(api_key=api_key)
-    # Switched to preview model for compatibility
     model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
     
     prompt = f"""
     Analyze this food input: "{food_input}".
     Context note: "{note}" (use this to understand portion or type if vague).
-    
-    Estimate values based on standard data.
+
+    Estimate the nutritional content based on standard data.
     Return ONLY a raw JSON string with this structure:
+
     {{
         "food_name": "Short concise name",
         "calories": int,
         "protein": int,
         "carbs": int,
-        "fats": int,
-        "fiber": int,
         "sugar": int,
+        "fiber": int,
+        "total_fats": int,
+        "saturated_fat": int,
         "sodium": int,
-        "micronutrients": "3 key vitamins/minerals"
+        "vitamin_a": int,       # µg
+        "vitamin_c": int,       # mg
+        "vitamin_d": int,       # µg
+        "calcium": int,         # mg
+        "iron": int,            # mg
+        "potassium": int,       # mg
+        "magnesium": int,       # mg
+        "zinc": int             # mg
     }}
     """
     try:
         response = model.generate_content(prompt)
         data = extract_json(response.text)
-        
-        # SAFEGUARD: Handle case where AI returns a list [{}, {}] instead of a single dict {}
         if isinstance(data, list):
-            if len(data) > 0:
-                return data[0]
-            else:
-                return None
-                
+            return data[0] if len(data) > 0 else None
         return data
     except Exception as e:
         st.error(f"AI Error: {e}")
         return None
 
 def analyze_planned_meal(planned_food, rem_cals, rem_prot, cur_stats, api_key):
-    """
-    New function to analyze a planned meal against remaining budgets and current micro intake.
-    """
     if not api_key: return "API Key missing."
-    
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
     
     prompt = f"""
-    You are a helpful nutrition coach. The user is planning to eat: "{planned_food}".
+    User plans to eat: "{planned_food}".
+    Status: Remaining {rem_cals} Cals, {rem_prot}g Prot.
+    Current Intake: Fiber {cur_stats['fiber']}g, Sugar {cur_stats['sugar']}g, Sodium {cur_stats['sodium']}mg.
 
-    Here is their current status for the day:
-    - **Remaining Budget:** {rem_cals} Calories, {rem_prot}g Protein.
-    - **Current Intake:** Fiber: {cur_stats['fiber']}g, Sugar: {cur_stats['sugar']}g, Sodium: {cur_stats['sodium']}mg.
-
-    Please analyze this plan:
-    1. Will this meal fit their remaining calorie/protein budget?
-    2. Consider the fiber, sugar, and sodium. Is this meal a good choice given what they've already eaten?
-    3. If it's not ideal, suggest a modification or a specific portion size.
-    
-    Keep the response concise, encouraging, and actionable.
+    Analyze:
+    1. Budget fit?
+    2. Micro choice?
+    3. Suggestions?
+    Keep it concise.
     """
     try:
         response = model.generate_content(prompt)
@@ -203,21 +197,11 @@ def analyze_planned_meal(planned_food, rem_cals, rem_prot, cur_stats, api_key):
 
 def get_weekly_analysis(week_data, goal, api_key):
     if not api_key: return "API Key missing."
-    
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
-    
-    # week_data is a dictionary or string summary
     prompt = f"""
-    You are a fitness coach. Analyze this weekly nutrition data for a user whose goal is "{goal}".
-    
-    Data:
-    {week_data}
-    
-    Provide:
-    1. A brief summary of adherence.
-    2. Highlight any specific nutrient deficiencies (Fiber, Sugar spikes, etc).
-    3. One actionable tip for next week.
+    Analyze weekly nutrition data for goal "{goal}". Data: {week_data}.
+    Provide: 1. Adherence summary. 2. Deficiency check. 3. One tip.
     """
     try:
         response = model.generate_content(prompt)
@@ -225,111 +209,95 @@ def get_weekly_analysis(week_data, goal, api_key):
     except Exception as e:
         return f"Could not generate analysis: {e}"
 
-# --- CUSTOM STYLING (THEME INJECTION) ---
-def inject_custom_css():
+# --- ICONS & STYLING ---
+def load_assets():
+    # Load Material Symbols Rounded
     st.markdown("""
-    <style>
-        /* COLOR PALETTE */
-        :root {
-            --bg-cream: #F3F0E8;
-            --text-dark: #1E2F23;
-            --accent-pink: #E882B3;
-            --accent-pink-dark: #D16B99;
-            --accent-green: #2F4F38;
-            --card-white: #FFFFFF;
-        }
+        <link rel="stylesheet" href="[https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0](https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0)" />
+        <style>
+            .icon {
+                font-family: 'Material Symbols Rounded';
+                font-weight: normal;
+                font-style: normal;
+                font-size: 24px;
+                line-height: 1;
+                letter-spacing: normal;
+                text-transform: none;
+                display: inline-block;
+                white-space: nowrap;
+                word-wrap: normal;
+                direction: ltr;
+                vertical-align: middle;
+                margin-right: 5px;
+            }
+            .big-icon { font-size: 28px; }
+            .metric-card {
+                background-color: #f0f2f6;
+                padding: 15px;
+                border-radius: 10px;
+                margin-bottom: 10px;
+            }
+            /* Custom Progress Bar for 'Bigger' look */
+            .custom-bar-bg {
+                background-color: #e0e0e0;
+                border-radius: 8px;
+                height: 20px;
+                width: 100%;
+                margin-top: 5px;
+            }
+            .custom-bar-fill {
+                height: 100%;
+                border-radius: 8px;
+                transition: width 0.5s ease-in-out;
+            }
+        </style>
+    """, unsafe_allow_html=True)
 
-        /* MAIN BACKGROUND */
-        .stApp {
-            background-color: var(--bg-cream);
-        }
+def render_big_metric(label, icon_name, value, target, unit, color):
+    pct = min(value / target, 1.0) * 100 if target > 0 else 0
+    st.markdown(f"""
+        <div style="margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                <span style="font-size: 1.2rem; font-weight: bold; color: #333;">
+                    <span class="icon big-icon" style="color:{color}">{icon_name}</span> {label}
+                </span>
+                <span style="font-weight: bold; color: #555;">{value} / {target} {unit}</span>
+            </div>
+            <div class="custom-bar-bg">
+                <div class="custom-bar-fill" style="width: {pct}%; background-color: {color};"></div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
-        /* TYPOGRAPHY */
-        h1, h2, h3, h4, .stMarkdown {
-            font-family: 'Helvetica Neue', Arial, sans-serif;
-            color: var(--text-dark) !important;
-        }
-        
-        h1 {
-            font-weight: 800;
-            font-size: 3rem;
-            letter-spacing: -1px;
-        }
+def render_small_metric(label, icon_name, value, target, unit, color):
+    pct = min(value / target, 1.0) * 100 if target > 0 else 0
+    st.markdown(f"""
+        <div style="margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+                <span><span class="icon" style="font-size: 18px; color:{color}">{icon_name}</span> {label}</span>
+                <span>{value} / {target} {unit}</span>
+            </div>
+            <div class="custom-bar-bg" style="height: 8px;">
+                <div class="custom-bar-fill" style="width: {pct}%; background-color: {color};"></div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
-        /* BUTTONS (Pill Shaped) */
-        .stButton > button {
-            background-color: var(--accent-pink);
-            color: white;
-            border-radius: 50px;
-            border: none;
-            padding: 12px 28px;
-            font-weight: 700;
-            font-size: 16px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: all 0.3s ease;
-        }
-        .stButton > button:hover {
-            background-color: var(--accent-pink-dark);
-            transform: translateY(-2px);
-            box-shadow: 0 6px 8px rgba(0,0,0,0.15);
-        }
-        
-        /* INPUT FIELDS (Rounded) */
-        .stTextInput > div > div > input {
-            border-radius: 20px;
-            border: 2px solid #E0E0E0;
-            padding: 10px 15px;
-            background-color: var(--card-white);
-        }
-        .stTextInput > div > div > input:focus {
-            border-color: var(--accent-pink);
-        }
-
-        /* CARDS / CONTAINERS (Rounded & Soft) */
-        div[data-testid="stVerticalBlockBorderWrapper"] {
-            border-radius: 30px;
-            background-color: var(--card-white);
-            border: none;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.05);
-            padding: 25px;
-            margin-bottom: 20px;
-        }
-        
-        /* PROGRESS BARS */
-        .stProgress > div > div > div > div {
-            background-color: var(--accent-green);
-        }
-        
-        /* TABS */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 10px;
-        }
-        .stTabs [data-baseweb="tab"] {
-            background-color: transparent;
-            border-radius: 20px;
-            padding: 10px 20px;
-            color: var(--text-dark);
-        }
-        .stTabs [aria-selected="true"] {
-            background-color: var(--text-dark);
-            color: white !important;
-        }
-
-        /* METRICS */
-        div[data-testid="stMetricValue"] {
-            font-weight: 800;
-            color: var(--accent-green);
-        }
-    </style>
+def render_micro_metric(label, icon_name, value, unit, color):
+    st.markdown(f"""
+        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 8px;">
+            <div class="icon" style="color:{color}; font-size: 24px; margin-bottom: 5px;">{icon_name}</div>
+            <div style="font-size: 0.8rem; color: #666;">{label}</div>
+            <div style="font-weight: bold; font-size: 1.0rem;">{value}{unit}</div>
+        </div>
     """, unsafe_allow_html=True)
 
 # --- MAIN APP ---
 def main():
-    inject_custom_css() # Inject the Marshmallow-style theme
+    load_assets() # Load Icons
     init_db()
     
-    # st.title removed here to let custom CSS handle headers more cleanly, usually just use markdown headers
-    st.markdown("# 🧬 AI Body Recomposition Tracker")
+    st.title("AI Body Recomposition Tracker")
 
     # --- SIDEBAR: CONFIG ---
     with st.sidebar:
@@ -351,12 +319,10 @@ def main():
              profile = None
         conn.close()
         
-        # Default values if no profile exists
         p_h, p_w, p_bf = 175.0, 70.0, 20.0
         p_act, p_goal, p_diet = "Sedentary", "Maintain / Recomp", "Balanced"
         
         if profile:
-            # Handle potential None values if migration just happened
             p_h = profile[0] if profile[0] else 175.0
             p_w = profile[1] if profile[1] else 70.0
             p_bf = profile[2] if profile[2] else 20.0
@@ -371,25 +337,19 @@ def main():
             height = st.number_input("Height (cm)", value=float(p_h))
             bf = st.number_input("Body Fat %", value=float(p_bf))
             
-            # Helper to find index safely
-            def get_index(options, val):
-                try: return options.index(val)
-                except: return 0
-                
             act_opts = ["Sedentary", "Lightly Active", "Moderately Active", "Very Active"]
-            activity = st.selectbox("Activity Level", act_opts, index=get_index(act_opts, p_act))
+            activity = st.selectbox("Activity Level", act_opts, index=act_opts.index(p_act) if p_act in act_opts else 0)
             
             st.subheader("Goals")
             goal_opts = ["Maintain / Recomp", "Lose Weight", "Gain Muscle"]
-            goal = st.selectbox("Primary Goal", goal_opts, index=get_index(goal_opts, p_goal))
+            goal = st.selectbox("Primary Goal", goal_opts, index=goal_opts.index(p_goal) if p_goal in goal_opts else 0)
             
             diet_opts = ["Balanced", "High Protein", "Keto"]
-            diet_type = st.selectbox("Diet Preference", diet_opts, index=get_index(diet_opts, p_diet))
+            diet_type = st.selectbox("Diet Preference", diet_opts, index=diet_opts.index(p_diet) if p_diet in diet_opts else 0)
             
             if st.form_submit_button("Update Targets"):
                 cals, prot, carbs, fats = calculate_macros(weight, height, bf, activity, goal, diet_type)
                 conn = get_db_connection()
-                # Update users table with new columns
                 conn.execute("""INSERT OR REPLACE INTO users 
                                 (id, height_cm, weight_kg, bf_percent, activity_level, goal, diet_type,
                                  target_calories, target_protein, target_carbs, target_fats) 
@@ -404,7 +364,6 @@ def main():
         st.divider()
         st.header("Log Body Stats")
         
-        # Fetch latest body stats for defaults
         conn = get_db_connection()
         try:
             last_stat = conn.execute("SELECT weight_kg, bf_percent FROM body_stats ORDER BY date DESC LIMIT 1").fetchone()
@@ -412,7 +371,6 @@ def main():
             last_stat = None
         conn.close()
         
-        # Use latest log if available, otherwise use profile weight
         last_w = last_stat[0] if last_stat else p_w
         last_bf = last_stat[1] if last_stat else p_bf
 
@@ -444,12 +402,9 @@ def main():
         return
         
     base_cals, t_prot, t_carbs, t_fats, user_goal = user_data
-    
-    # SAFEGUARD: Handle NoneType for user_goal if DB migration added null columns to existing row
-    if user_goal is None:
-        user_goal = "Maintain / Recomp"
+    if user_goal is None: user_goal = "Maintain / Recomp"
 
-    # --- DATE HANDLING & COMPENSATION ---
+    # --- DATE HANDLING ---
     today = datetime.now().strftime("%Y-%m-%d")
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     
@@ -463,41 +418,35 @@ def main():
     y_cals = y_stats[0] if y_stats and y_stats[0] else 0
     daily_target_cals = base_cals
     
-    # Adaptive Calorie Logic (Only adapt if strictly recomp/maintenance, skip for bulking/cutting to stay consistent)
     if "Maintain" in user_goal and y_cals > base_cals:
         overage = y_cals - base_cals
         deduction = min(overage, base_cals * 0.15)
         daily_target_cals -= deduction
-        st.warning(f"📉 **Adaptive Adjustment:** Target reduced by {deduction:.0f} kcal due to yesterday's overage.")
+        st.warning(f"📉 Adaptive Adjustment: Target reduced by {deduction:.0f} kcal")
 
     # --- TABS UI ---
-    tab1, tab2 = st.tabs(["🍽️ Daily Tracker", "🤖 AI Coach"])
+    tab1, tab2 = st.tabs(["Daily Tracker", "AI Coach"])
 
     # --- TAB 1: TRACKER ---
     with tab1:
-        # Date Picker for Logging
         c_date, c_spacer = st.columns([1, 4])
         with c_date:
             view_date_obj = st.date_input("Tracking Date", value=datetime.now())
             view_date = view_date_obj.strftime("%Y-%m-%d")
 
-        col1, col2 = st.columns([1.5, 1])
+        col1, col2 = st.columns([1.6, 1])
         
-        if view_date == today:
-            current_target_cals = daily_target_cals
-            date_label = "Today's"
-        else:
-            current_target_cals = base_cals
-            date_label = f"{view_date_obj.strftime('%b %d')}"
+        current_target_cals = daily_target_cals if view_date == today else base_cals
 
         with col1:
-            st.subheader(f"{date_label} Overview")
+            st.subheader("Daily Overview")
             
-            # Fetch Data for SELECTED Date
+            # Fetch Data
             conn = get_db_connection()
             stats = conn.execute("""SELECT SUM(calories), SUM(protein), SUM(carbs), SUM(fats),
-                                    SUM(fiber), SUM(sugar), SUM(sodium)
+                                    SUM(fiber), SUM(sugar), SUM(sodium), SUM(saturated_fat)
                                     FROM food_logs WHERE date = ?""", (view_date,)).fetchone()
+            conn.close()
             
             c_cal = stats[0] or 0
             c_prot = stats[1] or 0
@@ -506,45 +455,64 @@ def main():
             c_fiber = stats[4] or 0
             c_sugar = stats[5] or 0
             c_sodium = stats[6] or 0
+            c_sat_fat = stats[7] or 0
             
-            # --- DASHBOARD CARDS ---
-            # 1. Main Goal Progress
-            cal_progress = min(c_cal / current_target_cals, 1.0) if current_target_cals > 0 else 0
-            st.markdown(f"**Calories:** {c_cal} / {current_target_cals:.0f} ({int(cal_progress*100)}%)")
-            st.progress(cal_progress)
+            # --- TIER 1: CALORIES & PROTEIN (Primary) ---
+            t1_c1, t1_c2 = st.columns(2)
+            with t1_c1:
+                render_big_metric("Calories", "local_fire_department", c_cal, current_target_cals, "kcal", "#ff5722")
+            with t1_c2:
+                render_big_metric("Protein", "fitness_center", c_prot, t_prot, "g", "#4caf50")
+                
+            # --- TIER 2: OTHER MACROS (Secondary) ---
+            t2_c1, t2_c2 = st.columns(2)
+            with t2_c1:
+                render_small_metric("Carbs", "bakery_dining", c_carb, t_carbs, "g", "#2196f3")
+                render_small_metric("Fiber", "grass", c_fiber, 30, "g", "#8bc34a") # Avg target 30g
+                render_small_metric("Sugar", "icecream", c_sugar, 50, "g", "#e91e63") # Avg limit 50g
+            with t2_c2:
+                render_small_metric("Fats", "opacity", c_fat, t_fats, "g", "#ffc107")
+                render_small_metric("Sat. Fat", "water_drop", c_sat_fat, 20, "g", "#fbc02d") # Avg limit 20g
+                render_small_metric("Sodium", "grain", c_sodium, 2300, "mg", "#9e9e9e")
+
+            # --- TIER 3: MICRONUTRIENTS ---
+            st.write("") # Spacer
+            st.markdown("**Micronutrients**")
             
-            # 2. Macro Bars with Custom Colors (using HTML for color control since st.progress is limited)
-            def color_bar(label, val, target, color_hex, tooltip):
-                pct = min(val/target, 1.0) * 100 if target > 0 else 0
-                st.markdown(f"""
-                <div style="margin-bottom: 5px;">
-                    <span title="{tooltip}">{label}: <b>{val}g</b> / {target}g</span>
-                    <div style="background-color: #E6E2D8; border-radius: 10px; height: 12px; width: 100%;">
-                        <div style="background-color: {color_hex}; width: {pct}%; height: 100%; border-radius: 10px;"></div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+            # Fetch Micros Sum
+            conn = get_db_connection()
+            micro_stats = conn.execute("""SELECT SUM(vitamin_a), SUM(vitamin_c), SUM(vitamin_d), 
+                                          SUM(calcium), SUM(iron), SUM(potassium), SUM(magnesium), SUM(zinc)
+                                          FROM food_logs WHERE date = ?""", (view_date,)).fetchone()
+            conn.close()
             
-            c_m1, c_m2, c_m3 = st.columns(3)
-            # Updated colors to match theme better
-            with c_m1: color_bar("Protein", c_prot, t_prot, "#2F4F38", "Crucial for muscle repair and growth.") # Dark Green
-            with c_m2: color_bar("Carbs", c_carb, t_carbs, "#7D9068", "Primary energy source.") # Muted Green
-            with c_m3: color_bar("Fats", c_fat, t_fats, "#D16B99", "Essential for hormone regulation.") # Dark Pink
-            
-            # 3. Micro Nutrient Dashboard
-            st.markdown("---")
-            st.caption("Nutrient Watchlist")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Fiber", f"{c_fiber}g", help="Target: ~30g for digestion")
-            m2.metric("Sugar", f"{c_sugar}g", help="Monitor added sugars")
-            m3.metric("Sodium", f"{c_sodium}mg", help="Target: <2300mg")
+            # Unpack safely
+            c_vit_a = micro_stats[0] or 0
+            c_vit_c = micro_stats[1] or 0
+            c_vit_d = micro_stats[2] or 0
+            c_calc = micro_stats[3] or 0
+            c_iron = micro_stats[4] or 0
+            c_pot = micro_stats[5] or 0
+            c_mag = micro_stats[6] or 0
+            c_zinc = micro_stats[7] or 0
+
+            m_row1_1, m_row1_2, m_row1_3, m_row1_4 = st.columns(4)
+            with m_row1_1: render_micro_metric("Vit A", "visibility", c_vit_a, "µg", "#FF9800")
+            with m_row1_2: render_micro_metric("Vit C", "nutrition", c_vit_c, "mg", "#FFEB3B")
+            with m_row1_3: render_micro_metric("Vit D", "sunny", c_vit_d, "µg", "#FFC107")
+            with m_row1_4: render_micro_metric("Calcium", "egg", c_calc, "mg", "#F5F5F5") # White-ish
+
+            m_row2_1, m_row2_2, m_row2_3, m_row2_4 = st.columns(4)
+            with m_row2_1: render_micro_metric("Iron", "hexagon", c_iron, "mg", "#795548")
+            with m_row2_2: render_micro_metric("Potass.", "bolt", c_pot, "mg", "#673AB7")
+            with m_row2_3: render_micro_metric("Magnes.", "spa", c_mag, "mg", "#009688")
+            with m_row2_4: render_micro_metric("Zinc", "science", c_zinc, "mg", "#607D8B")
 
             st.divider()
             
-            # Meal Logging Form - NOW PROPERLY INDENTED INSIDE COL1
             # --- MEAL LOGGING ---
             with st.container(border=True):
-                st.markdown(f"#### ➕ Add Meal to {view_date}")
+                st.markdown(f"#### <span class='icon'>add_circle</span> Add Meal", unsafe_allow_html=True)
                 f_name = st.text_input("Describe your meal", placeholder="e.g., Double cheeseburger no bun")
                 f_note = st.text_input("Note (Optional)", placeholder="e.g., Ate out, Snack at work")
                 
@@ -552,107 +520,94 @@ def main():
                     if not f_name:
                         st.warning("Please describe your food first.")
                     else:
-                        with st.spinner("Analyzing meal with Gemini..."):
+                        with st.spinner("Analyzing..."):
                             data = analyze_food_with_gemini(f_name, f_note, active_api_key)
                             if data:
-                                # --- SAFE NUTRIENT PARSING ---
                                 calories = int(data.get('calories', 0) or 0)
-                                
-                                # Protein estimate: add safety check, min 1g if zero
                                 protein = int(data.get('protein', 0) or 0)
                                 if protein == 0 and calories > 0:
-                                    # crude heuristic: 15-25% calories from protein if missing
                                     protein = max(1, round(calories * 0.2 / 4))
                                 
-                                carbs = int(data.get('carbs', 0) or 0)
-                                fats = int(data.get('fats', 0) or 0)
-                                fiber = int(data.get('fiber', 0) or 0)
-                                sugar = int(data.get('sugar', 0) or 0)
-                                sodium = int(data.get('sodium', 0) or 0)
-                                
-                                # --- DATABASE LOGGING ---
                                 conn = get_db_connection()
                                 conn.execute("""INSERT INTO food_logs 
-                                    (date, food_name, amount_desc, calories, protein, carbs, fats, fiber, sugar, sodium, nutrients, note) 
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                    (date, food_name, amount_desc, calories, protein, carbs, fats, fiber, sugar, sodium, saturated_fat,
+                                     vitamin_a, vitamin_c, vitamin_d, calcium, iron, potassium, magnesium, zinc, note) 
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                                     (view_date, 
                                      data.get('food_name', 'Unknown Food'), 
                                      f_name, 
-                                     calories, protein, carbs, fats, 
-                                     fiber, sugar, sodium, 
-                                     data.get('micronutrients', ''), f_note))
+                                     calories, protein, 
+                                     int(data.get('carbs', 0) or 0), 
+                                     int(data.get('total_fats', 0) or 0), 
+                                     int(data.get('fiber', 0) or 0), 
+                                     int(data.get('sugar', 0) or 0), 
+                                     int(data.get('sodium', 0) or 0), 
+                                     int(data.get('saturated_fat', 0) or 0),
+                                     int(data.get('vitamin_a', 0) or 0),
+                                     int(data.get('vitamin_c', 0) or 0),
+                                     int(data.get('vitamin_d', 0) or 0),
+                                     int(data.get('calcium', 0) or 0),
+                                     int(data.get('iron', 0) or 0),
+                                     int(data.get('potassium', 0) or 0),
+                                     int(data.get('magnesium', 0) or 0),
+                                     int(data.get('zinc', 0) or 0),
+                                     f_note))
                                 conn.commit()
                                 conn.close()
-                                
-                                st.success(f"Logged: {data.get('food_name', 'Unknown Food')}")
                                 st.rerun()
                             else:
-                                st.error("Could not analyze food. Try adjusting your description or check API key.")
-
+                                st.error("Analysis failed.")
 
         with col2:
             st.subheader("Logs")
             
             conn = get_db_connection()
-            # Fetch logs including note AND new columns
             logs = conn.execute("""
-                SELECT id, food_name, calories, protein, carbs, fats, fiber, sugar, sodium, nutrients, note 
-                FROM food_logs 
-                WHERE date = ? 
-                ORDER BY id DESC
+                SELECT id, food_name, calories, protein, carbs, fats, fiber, sugar, sodium, saturated_fat, note 
+                FROM food_logs WHERE date = ? ORDER BY id DESC
             """, (view_date,)).fetchall()
             conn.close()
             
             if not logs:
-                st.info(f"No meals logged for {view_date}.")
+                st.info(f"No meals logged.")
             else:
                 for log in logs:
-                    log_id, name, cal, prot, carb, fat, fib, sug, sod, micro, note = log
-                    
-                    # Default values for potentially NULL columns
+                    log_id, name, cal, prot, carb, fat, fib, sug, sod, sat_fat, note = log
                     fib = fib or 0
                     sug = sug or 0
                     sod = sod or 0
-                    micro = micro or ""
+                    sat_fat = sat_fat or 0
                     
                     with st.container(border=True):
-                        # Header Row: Name + Delete Button
+                        # Header
                         row1_col1, row1_col2 = st.columns([5, 1])
-                        with row1_col1:
-                            st.markdown(f"### {name}")
+                        with row1_col1: st.markdown(f"**{name}**")
                         with row1_col2:
-                            if st.button("🗑️", key=f"del_{log_id}"):
+                            if st.button("✖", key=f"del_{log_id}"):
                                 conn = get_db_connection()
                                 conn.execute("DELETE FROM food_logs WHERE id = ?", (log_id,))
                                 conn.commit()
                                 conn.close()
                                 st.rerun()
 
-                        # Main Macros (Large Font)
-                        row2_col1, row2_col2 = st.columns(2)
-                        with row2_col1:
-                            st.markdown(f"<div style='font-size: 1.2rem; font-weight: bold; color: #2F4F38;'>🥩 {prot}g Protein</div>", unsafe_allow_html=True)
-                        with row2_col2:
-                             st.markdown(f"<div style='font-size: 1.2rem; font-weight: bold; color: #E882B3;'>🔥 {cal} Kcal</div>", unsafe_allow_html=True)
-
-                        # Secondary Macros (Small Font)
+                        # Main Stats (Big)
                         st.markdown(f"""
-                        <div style='font-size: 0.9rem; color: #555; margin-top: 5px; margin-bottom: 5px;'>
-                            <b>Carbs:</b> {carb}g &nbsp;•&nbsp; 
-                            <b>Fats:</b> {fat}g &nbsp;•&nbsp; 
-                            <b>Fiber:</b> {fib}g &nbsp;•&nbsp; 
-                            <b>Sugar:</b> {sug}g &nbsp;•&nbsp; 
-                            <b>Sodium:</b> {sod}mg
+                        <div style='display:flex; gap:15px; align-items:center; margin-bottom:5px;'>
+                            <span style='color:#4caf50; font-weight:bold;'><span class='icon'>fitness_center</span>{prot}g</span>
+                            <span style='color:#ff5722; font-weight:bold;'><span class='icon'>local_fire_department</span>{cal}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        # Other Macros (Small)
+                        st.markdown(f"""
+                        <div style='font-size: 0.85rem; color: #555;'>
+                            C:{carb}g F:{fat}g (Sat:{sat_fat}g) Fib:{fib}g Sug:{sug}g Sod:{sod}mg
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # Micronutrients & Notes
-                        if micro:
-                            st.caption(f"✨ {micro}")
-                        if note:
-                            st.caption(f"📝 {note}")
+                        if note: st.caption(f"📝 {note}")
                 
-                if st.button(f"Clear Day", type="secondary"):
+                if st.button("Clear Logs", type="secondary"):
                     conn = get_db_connection()
                     conn.execute("DELETE FROM food_logs WHERE date = ?", (view_date,))
                     conn.commit()
@@ -661,120 +616,75 @@ def main():
 
     # --- TAB 2: AI COACH ---
     with tab2:
-        st.subheader("🤖 AI Nutrition Coach")
+        st.subheader("AI Coach")
         
-        # --- PREPARE DATA FOR TAB 2 ---
         conn = get_db_connection()
-        # Today's stats for context
         today_stats = conn.execute("""SELECT SUM(calories), SUM(protein), SUM(fiber), SUM(sugar), SUM(sodium) 
                                       FROM food_logs WHERE date = ?""", (today,)).fetchone()
         
-        # Historical Data for Consistency/Trends
-        try:
-            df_food = pd.read_sql_query("SELECT date, SUM(calories) as calories, SUM(protein) as protein, SUM(fiber) as fiber FROM food_logs GROUP BY date ORDER BY date", conn)
-        except:
-            df_food = pd.DataFrame()
-        
-        # Week Data for report
         week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         week_logs = pd.read_sql_query(f"SELECT * FROM food_logs WHERE date >= '{week_ago}'", conn)
+        
+        # Consistency Data
+        try:
+            df_food = pd.read_sql_query("SELECT date, SUM(calories) as calories, SUM(protein) as protein FROM food_logs GROUP BY date ORDER BY date", conn)
+        except:
+            df_food = pd.DataFrame()
         conn.close()
 
-        # Parse Today's Current Status
         t_cur_cal = today_stats[0] or 0
         t_cur_prot = today_stats[1] or 0
-        t_cur_fiber = today_stats[2] or 0
-        t_cur_sugar = today_stats[3] or 0
-        t_cur_sodium = today_stats[4] or 0
-        
         rem_cals = daily_target_cals - t_cur_cal
         rem_prot = t_prot - t_cur_prot
 
-        # --- SECTION 1: PLANNED MEAL ANALYZER (NEW) ---
+        # Planned Meal
         with st.container(border=True):
-            st.markdown("### 🔮 Analyze a Planned Meal")
-            st.info(f"**Remaining Today:** {rem_cals:.0f} Calories, {rem_prot}g Protein")
+            st.markdown(f"#### <span class='icon'>psychology</span> Analyze Plan", unsafe_allow_html=True)
+            st.info(f"Remaining: {rem_cals:.0f} cal, {rem_prot}g prot")
             
-            c_input, c_btn = st.columns([3, 1])
-            with c_input:
-                planned_food = st.text_input("What are you planning to eat?", placeholder="e.g., A slice of pepperoni pizza and a coke")
-            with c_btn:
-                st.write("") # Spacer
-                st.write("") 
-                analyze_click = st.button("Analyze Plan", type="primary")
-            
-            if analyze_click:
-                if not planned_food:
-                    st.warning("Please enter a food item.")
-                else:
-                    with st.spinner("Consulting AI Coach..."):
-                        cur_micros = {'fiber': t_cur_fiber, 'sugar': t_cur_sugar, 'sodium': t_cur_sodium}
-                        advice = analyze_planned_meal(planned_food, int(rem_cals), int(rem_prot), cur_micros, active_api_key)
-                        st.markdown(advice)
+            c1, c2 = st.columns([3,1])
+            with c1: planned_food = st.text_input("Planned food", placeholder="Pizza slice...")
+            with c2: 
+                st.write("")
+                st.write("")
+                if st.button("Analyze"):
+                    if planned_food:
+                        with st.spinner("Thinking..."):
+                            cur = {'fiber': today_stats[2] or 0, 'sugar': today_stats[3] or 0, 'sodium': today_stats[4] or 0}
+                            res = analyze_planned_meal(planned_food, int(rem_cals), int(rem_prot), cur, active_api_key)
+                            st.markdown(res)
 
         st.divider()
 
-        # --- SECTION 2: CONSISTENCY TRACKER (MOVED FROM TAB 3) ---
-        st.markdown("### 🏆 Consistency Tracker")
+        # Consistency
+        st.markdown("#### Consistency")
         if not df_food.empty:
-            df_food['hit_protein'] = df_food['protein'] >= (t_prot * 0.9) # Within 10%
+            df_food['hit_prot'] = df_food['protein'] >= (t_prot * 0.9)
             df_food['hit_cal'] = (df_food['calories'] >= (base_cals * 0.9)) & (df_food['calories'] <= (base_cals * 1.1))
             
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
+            prot_rate = (df_food['hit_prot'].sum() / len(df_food)) * 100
+            cal_rate = (df_food['hit_cal'].sum() / len(df_food)) * 100
             
-            prot_pct = (df_food['hit_protein'].sum() / len(df_food)) * 100
-            cal_pct = (df_food['hit_cal'].sum() / len(df_food)) * 100
-            
-            # Simple streak calc
-            # Sort by date desc
-            df_sort = df_food.sort_values('date', ascending=False)
-            streak = 0
-            for hit in df_sort['hit_protein']:
-                if hit: streak += 1
-                else: break
-            
-            c1.metric("Protein Goal Hit Rate", f"{prot_pct:.1f}%")
-            c2.metric("Calorie Goal Hit Rate", f"{cal_pct:.1f}%")
-            c3.metric("Current Protein Streak", f"{streak} Days")
+            c1.metric("Protein Rate", f"{prot_rate:.0f}%")
+            c2.metric("Calorie Rate", f"{cal_rate:.0f}%")
         else:
-            st.info("Log meals to unlock consistency tracking.")
+            st.info("Log meals to track consistency.")
 
         st.divider()
 
-        # --- SECTION 3: WEEKLY BREAKDOWNS (MOVED FROM TAB 3 & MERGED WITH REPORT) ---
-        col_header, col_report_btn = st.columns([3, 1])
-        with col_header:
-            st.markdown("### 📅 Weekly Breakdowns")
-        with col_report_btn:
-             if not week_logs.empty:
-                if st.button("Generate AI Report"):
-                    with st.spinner("Analyzing weekly trends..."):
-                        # Prepare summary string for AI
-                        summary = week_logs.groupby('date')[['calories', 'protein', 'fiber', 'sugar']].sum().to_string()
-                        report = get_weekly_analysis(summary, user_goal, active_api_key)
-                        st.markdown(report)
-
-        if not df_food.empty:
-            df_food['date'] = pd.to_datetime(df_food['date'])
-            df_food['week_start'] = df_food['date'].dt.to_period('W').apply(lambda r: r.start_time)
-            
-            weeks = df_food['week_start'].unique()
-            
-            for week_start in sorted(weeks, reverse=True):
-                week_end = week_start + timedelta(days=6)
-                w_data = df_food[df_food['week_start'] == week_start]
-                
-                avg_cal = w_data['calories'].mean()
-                avg_prot = w_data['protein'].mean()
-                avg_fiber = w_data['fiber'].mean()
-                
-                with st.expander(f"Week of {week_start.strftime('%b %d')}"):
-                    wc1, wc2, wc3 = st.columns(3)
-                    wc1.metric("Avg Calories", f"{avg_cal:.0f}", f"{avg_cal-base_cals:.0f}")
-                    wc2.metric("Avg Protein", f"{avg_prot:.0f}", f"{avg_prot-t_prot:.0f}")
-                    wc3.metric("Avg Fiber", f"{avg_fiber:.1f}g")
-        else:
-             st.info("No weekly data available yet.")
+        # Weekly Report
+        c1, c2 = st.columns([3,1])
+        with c1: st.markdown("#### Weekly Report")
+        with c2:
+            if not week_logs.empty and st.button("Generate"):
+                with st.spinner("Generating..."):
+                    summary = week_logs.groupby('date')[['calories', 'protein', 'fiber']].sum().to_string()
+                    rep = get_weekly_analysis(summary, user_goal, active_api_key)
+                    st.markdown(rep)
+        
+        if not week_logs.empty:
+             st.dataframe(week_logs[['date', 'food_name', 'calories', 'protein']].head(5), hide_index=True)
 
 if __name__ == "__main__":
     main()
