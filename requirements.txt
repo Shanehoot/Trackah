@@ -1,3 +1,5 @@
 streamlit
 google-generativeai
 pandas
+google-cloud-firestore
+google-auth
