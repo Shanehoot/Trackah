@@ -50,7 +50,7 @@ class DataManager:
 
                 creds = service_account.Credentials.from_service_account_info(key_dict)
                 
-                # Use the custom 'tracker' database as identified in previous troubleshooting
+                # Use the custom 'tracker' database
                 self.db = firestore.Client(
                     credentials=creds, 
                     project=key_dict['project_id'], 
@@ -274,31 +274,32 @@ def calculate_macros(weight, height, bf_percent, activity_level, goal, diet_type
     return target_calories, target_protein, target_carbs, target_fats
 
 # --- AI INTEGRATION ---
-def analyze_food_with_gemini(food_input, note, api_key):
+def analyze_food_with_gemini(food_input, api_key):
     if not api_key or "YOUR_API_KEY" in api_key:
         st.error("Please provide a valid API Key.")
         return None
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash')
     
-    # UPDATED PROMPT TO FIX TRUNCATION ISSUES
     prompt = f"""
     You are a nutritionist AI. Analyze the following food input string.
     
     Input: "{food_input}"
-    Notes: "{note}"
 
     CRITICAL INSTRUCTIONS:
     1. If the input contains MULTIPLE distinct items (e.g., "5 potatoes, 1 carrot, 6 broccoli florets"), you MUST calculate the nutritional content for ALL items combined.
     2. Do NOT just output the first item. SUM the calories and nutrients for every item listed.
     3. For 'food_name', create a summary title that includes the main components (e.g. "Potatoes, Carrots & Broccoli").
+    4. For 'breakdown', provide a concise string detailing the macros for each individual component found in the input. 
+       Format: "Item: Cals, Protein; Item2: Cals, Protein" (e.g., "5 Potatoes: 500kcal, 10g P; 1 Carrot: 30kcal, 0.5g P").
     
     Return ONLY a JSON with this structure (for the TOTAL combined meal):
     {{
         "food_name": "string", "calories": int, "protein": int, "carbs": int, "sugar": int, "fiber": int,
         "total_fats": int, "saturated_fat": int, "sodium": int,
         "vitamin_a": int, "vitamin_c": int, "vitamin_d": int, "calcium": int, "iron": int, 
-        "potassium": int, "magnesium": int, "zinc": int
+        "potassium": int, "magnesium": int, "zinc": int,
+        "breakdown": "string" 
     }}
     """
     try:
@@ -309,19 +310,21 @@ def analyze_food_with_gemini(food_input, note, api_key):
     except Exception as e:
         st.error(f"AI Error: {e}"); return None
 
-def analyze_image_with_gemini(image_bytes, note, api_key):
+def analyze_image_with_gemini(image_bytes, api_key):
     if not api_key: return None
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash')
     prompt = f"""
-    Analyze this food image. Note: "{note}".
+    Analyze this food image.
     If multiple items are present, sum their nutritional values together.
+    
     Return JSON:
     {{
         "food_name": "string", "calories": int, "protein": int, "carbs": int, "sugar": int, "fiber": int,
         "total_fats": int, "saturated_fat": int, "sodium": int,
         "vitamin_a": int, "vitamin_c": int, "vitamin_d": int, "calcium": int, "iron": int, 
-        "potassium": int, "magnesium": int, "zinc": int
+        "potassium": int, "magnesium": int, "zinc": int,
+        "breakdown": "Concise string listing macros per visual component (e.g. 'Steak: 400cal, 40g P; Salad: 50cal, 1g P')"
     }}
     """
     try:
@@ -412,31 +415,6 @@ def main():
     load_assets()
     
     st.title("AI Body Recomposition Tracker")
-    
-    # --- STORAGE STATUS INDICATOR ---
-    if dm.use_firestore:
-        st.success("🟢 Connected to Google Cloud Firestore (Persistent)")
-    else:
-        st.warning("🟠 Using Local Storage (Data wipes on restart)")
-        
-        # DEBUG INFO FOR USER
-        with st.expander("Troubleshooting Connection", expanded=False):
-            st.write("If you expect to be connected to the cloud, check these:")
-            
-            if not HAS_FIRESTORE_LIB:
-                st.error("❌ Missing Libraries: `google-cloud-firestore` or `google-auth` not installed.")
-                if IMPORT_ERROR:
-                    st.code(IMPORT_ERROR, language="text")
-            else:
-                st.success("✅ Libraries Installed")
-                
-            if "gcp_service_account" not in st.secrets:
-                st.error("❌ Missing Secrets: `[gcp_service_account]` section not found in secrets.toml")
-            else:
-                st.success("✅ Secrets Found")
-                
-            if dm.connection_error:
-                st.error(f"❌ Database Error: {dm.connection_error}")
 
     # --- SIDEBAR ---
     with st.sidebar:
@@ -445,7 +423,7 @@ def main():
             active_api_key = st.text_input("Enter Gemini API Key", type="password")
         else:
             active_api_key = API_KEY
-            st.success("API Key loaded")
+            # st.success("API Key loaded") # REMOVED per request
 
         profile = dm.get_user_profile()
         
@@ -578,12 +556,12 @@ def main():
             with st.container(border=True):
                 st.markdown(f"#### <span class='icon'>add_circle</span> Add Meal", unsafe_allow_html=True)
                 f_name = st.text_input("Describe your meal", placeholder="e.g., Double cheeseburger no bun")
-                f_note = st.text_input("Note (Optional)", placeholder="e.g., Ate out, Snack at work")
+                # REMOVED NOTE INPUT HERE
                 if st.button("Log Meal", type="primary"):
                     if not f_name: st.warning("Describe food first.")
                     else:
                         with st.spinner("Analyzing..."):
-                            data = analyze_food_with_gemini(f_name, f_note, active_api_key)
+                            data = analyze_food_with_gemini(f_name, "", active_api_key) # Pass empty string for note
                             if data:
                                 # Prepare data dictionary
                                 log_entry = {
@@ -594,7 +572,8 @@ def main():
                                     'saturated_fat': data['saturated_fat'], 'vitamin_a': data['vitamin_a'],
                                     'vitamin_c': data['vitamin_c'], 'vitamin_d': data['vitamin_d'],
                                     'calcium': data['calcium'], 'iron': data['iron'], 'potassium': data['potassium'],
-                                    'magnesium': data['magnesium'], 'zinc': data['zinc'], 'note': f_note
+                                    'magnesium': data['magnesium'], 'zinc': data['zinc'], 
+                                    'note': data.get('breakdown', '') # Use breakdown as note
                                 }
                                 dm.add_food_log(log_entry)
                                 st.rerun()
@@ -620,6 +599,11 @@ def main():
                         </div>
                         <div style='font-size:0.85em; color:#555;'>C:{log['carbs']}g F:{log['fats']}g (Sat:{log.get('saturated_fat',0)}g) Fib:{log['fiber']}g Sug:{log['sugar']}g Sod:{log['sodium']}mg</div>
                         """, unsafe_allow_html=True)
+                        
+                        # SHOW BREAKDOWN AS NOTE
+                        if log.get('note'):
+                             st.caption(f"📝 {log['note']}")
+
             else: st.info("No meals.")
             
             if st.button("Clear Day", type="secondary"):
@@ -757,11 +741,11 @@ def main():
                 bytes_data = img_file.getvalue()
                 st.image(bytes_data, caption="Captured Image", use_column_width=True)
                 
-                p_note = st.text_input("Notes for Photo Log", placeholder="e.g. Homemade, light oil")
+                # REMOVED NOTE INPUT HERE
                 
                 if st.button("Analyze & Log Photo", type="primary"):
                     with st.spinner("Analyzing image..."):
-                        data = analyze_image_with_gemini(bytes_data, p_note, active_api_key)
+                        data = analyze_image_with_gemini(bytes_data, "", active_api_key) # Pass empty string
                         if data:
                             st.success(f"Identified: {data.get('food_name')}")
                             # Log to DB
@@ -773,7 +757,8 @@ def main():
                                 'saturated_fat': data['saturated_fat'], 'vitamin_a': data['vitamin_a'],
                                 'vitamin_c': data['vitamin_c'], 'vitamin_d': data['vitamin_d'],
                                 'calcium': data['calcium'], 'iron': data['iron'], 'potassium': data['potassium'],
-                                'magnesium': data['magnesium'], 'zinc': data['zinc'], 'note': p_note
+                                'magnesium': data['magnesium'], 'zinc': data['zinc'], 
+                                'note': data.get('breakdown', '') # Use breakdown as note
                             }
                             dm.add_food_log(log_entry)
                             st.toast("Meal logged successfully!")
