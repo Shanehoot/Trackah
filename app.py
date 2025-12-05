@@ -50,11 +50,11 @@ class DataManager:
 
                 creds = service_account.Credentials.from_service_account_info(key_dict)
                 
-                # UPDATED LINE: Added database='tracker' to match your screenshot
+                # Use the custom 'tracker' database as identified in previous troubleshooting
                 self.db = firestore.Client(
                     credentials=creds, 
                     project=key_dict['project_id'], 
-                    database='tracker'
+                    database='tracker' 
                 )
                 self.use_firestore = True
             except Exception as e:
@@ -152,7 +152,6 @@ class DataManager:
             conn.close()
 
     def delete_food_log(self, log_id):
-        # For Firestore, log_id is the document ID. For SQLite, it could be the int ID or UID.
         if self.use_firestore:
             self.db.collection('food_logs').document(log_id).delete()
         else:
@@ -181,8 +180,7 @@ class DataManager:
             logs = []
             for doc in docs:
                 d = doc.to_dict()
-                d['id'] = doc.id # Use document ID for deletion key
-                # Ensure defaults
+                d['id'] = doc.id 
                 defaults = {'calories':0, 'protein':0, 'carbs':0, 'fats':0, 'fiber':0, 'sugar':0, 'sodium':0, 'saturated_fat':0}
                 for k,v in defaults.items():
                     if k not in d: d[k] = v
@@ -283,10 +281,19 @@ def analyze_food_with_gemini(food_input, note, api_key):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash')
     
+    # UPDATED PROMPT TO FIX TRUNCATION ISSUES
     prompt = f"""
-    Analyze food: "{food_input}". Note: "{note}".
-    Estimate estimates for standard serving.
-    Return JSON:
+    You are a nutritionist AI. Analyze the following food input string.
+    
+    Input: "{food_input}"
+    Notes: "{note}"
+
+    CRITICAL INSTRUCTIONS:
+    1. If the input contains MULTIPLE distinct items (e.g., "5 potatoes, 1 carrot, 6 broccoli florets"), you MUST calculate the nutritional content for ALL items combined.
+    2. Do NOT just output the first item. SUM the calories and nutrients for every item listed.
+    3. For 'food_name', create a summary title that includes the main components (e.g. "Potatoes, Carrots & Broccoli").
+    
+    Return ONLY a JSON with this structure (for the TOTAL combined meal):
     {{
         "food_name": "string", "calories": int, "protein": int, "carbs": int, "sugar": int, "fiber": int,
         "total_fats": int, "saturated_fat": int, "sodium": int,
@@ -308,6 +315,7 @@ def analyze_image_with_gemini(image_bytes, note, api_key):
     model = genai.GenerativeModel('gemini-2.0-flash')
     prompt = f"""
     Analyze this food image. Note: "{note}".
+    If multiple items are present, sum their nutritional values together.
     Return JSON:
     {{
         "food_name": "string", "calories": int, "protein": int, "carbs": int, "sugar": int, "fiber": int,
