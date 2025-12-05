@@ -8,13 +8,18 @@ import re
 import os
 import uuid
 
-# Try importing Firestore dependencies
+# --- DEBUGGING GLOBALS ---
+IMPORT_ERROR = None
+HAS_FIRESTORE_LIB = False
+
+# --- FIRESTORE SETUP ---
 try:
     from google.cloud import firestore
     from google.oauth2 import service_account
     HAS_FIRESTORE_LIB = True
-except ImportError:
+except ImportError as e:
     HAS_FIRESTORE_LIB = False
+    IMPORT_ERROR = str(e)
 
 # --- CONFIGURATION & SETUP ---
 st.set_page_config(page_title="AI Macro Tracker", layout="wide", page_icon="🧬")
@@ -44,7 +49,13 @@ class DataManager:
                     key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
 
                 creds = service_account.Credentials.from_service_account_info(key_dict)
-                self.db = firestore.Client(credentials=creds, project=key_dict['project_id'])
+                
+                # UPDATED LINE: Added database='tracker' to match your screenshot
+                self.db = firestore.Client(
+                    credentials=creds, 
+                    project=key_dict['project_id'], 
+                    database='tracker'
+                )
                 self.use_firestore = True
             except Exception as e:
                 self.connection_error = str(e)
@@ -126,7 +137,6 @@ class DataManager:
         data['uid'] = unique_id
         
         if self.use_firestore:
-            # Firestore auto-generates doc ID, but we save UID inside too
             self.db.collection('food_logs').add(data)
         else:
             conn = sqlite3.connect(self.sqlite_db)
@@ -400,12 +410,25 @@ def main():
         st.success("🟢 Connected to Google Cloud Firestore (Persistent)")
     else:
         st.warning("🟠 Using Local Storage (Data wipes on restart)")
-        if not HAS_FIRESTORE_LIB:
-            st.error("❌ Missing libraries. Please add 'google-cloud-firestore' and 'google-auth' to requirements.txt")
-        elif "gcp_service_account" not in st.secrets:
-            st.error("❌ Credentials missing. Add [gcp_service_account] to secrets.")
-        elif dm.connection_error:
-            st.error(f"❌ Connection Error: {dm.connection_error}")
+        
+        # DEBUG INFO FOR USER
+        with st.expander("Troubleshooting Connection", expanded=False):
+            st.write("If you expect to be connected to the cloud, check these:")
+            
+            if not HAS_FIRESTORE_LIB:
+                st.error("❌ Missing Libraries: `google-cloud-firestore` or `google-auth` not installed.")
+                if IMPORT_ERROR:
+                    st.code(IMPORT_ERROR, language="text")
+            else:
+                st.success("✅ Libraries Installed")
+                
+            if "gcp_service_account" not in st.secrets:
+                st.error("❌ Missing Secrets: `[gcp_service_account]` section not found in secrets.toml")
+            else:
+                st.success("✅ Secrets Found")
+                
+            if dm.connection_error:
+                st.error(f"❌ Database Error: {dm.connection_error}")
 
     # --- SIDEBAR ---
     with st.sidebar:
