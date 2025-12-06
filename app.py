@@ -202,11 +202,14 @@ class DataManager:
 
     def get_logs_history(self, start_date_str):
         if self.use_firestore:
+            # Firestore doesn't inherently order by insertion without a timestamp field in the query
+            # Relying on date filtering
             docs = self.db.collection('food_logs').where('date', '>=', start_date_str).stream()
             return [doc.to_dict() for doc in docs]
         else:
             conn = sqlite3.connect(self.sqlite_db)
-            df = pd.read_sql_query(f"SELECT * FROM food_logs WHERE date >= '{start_date_str}'", conn)
+            # Ordered by ID DESC ensures newest logs come first
+            df = pd.read_sql_query(f"SELECT * FROM food_logs WHERE date >= '{start_date_str}' ORDER BY id DESC", conn)
             conn.close()
             return df.to_dict('records')
 
@@ -234,7 +237,6 @@ class DataManager:
     def get_latest_body_stat(self):
         stats = self.get_body_stats_history()
         if stats:
-            # sort by date
             stats.sort(key=lambda x: x['date'], reverse=True)
             return stats[0]
         return None
@@ -293,7 +295,6 @@ dm = DataManager()
 def extract_json(text):
     try:
         clean_text = text.strip()
-        # Find the first { and last }
         start = clean_text.find('{')
         end = clean_text.rfind('}') + 1
         if start != -1 and end != -1:
@@ -584,22 +585,37 @@ def main():
         # 1A. Smart Suggestions (Templates + Recent)
         with st.expander("⚡ Smart Suggestions (Templates & Recent)", expanded=True):
             templates = dm.get_templates()
-            recent_logs = dm.get_logs_history((datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d"))
-            recent_names = list(set([r['food_name'] for r in recent_logs]))[:5]
+            # Fetch recent logs, sort by date descending to get latest
+            recent_logs = dm.get_logs_history((datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"))
+            recent_logs.sort(key=lambda x: x.get('date', ''), reverse=True) # Sort in memory
+            
+            # Filter for unique names, keeping top 3 most recent
+            recent_names = []
+            for r in recent_logs:
+                if r['food_name'] not in recent_names:
+                    recent_names.append(r['food_name'])
+                if len(recent_names) >= 3:
+                    break
 
             col_sug1, col_sug2 = st.columns(2)
             with col_sug1:
                 st.markdown("**My Templates**")
                 if templates:
                     for t in templates:
-                        if st.button(f"📄 {t['name']}", key=f"tpl_{t['id']}"):
-                            food_data = json.loads(t['food_items_json'])
-                            dm.add_food_log({
-                                'date': view_date, 'food_name': t['name'], 'amount_desc': "Template",
-                                'calories': t['total_calories'], 'protein': t['total_protein'],
-                                **food_data 
-                            })
-                            st.rerun()
+                        c_t1, c_t2 = st.columns([4, 1])
+                        with c_t1:
+                            if st.button(f"📄 {t['name']}", key=f"tpl_{t['id']}"):
+                                food_data = json.loads(t['food_items_json'])
+                                dm.add_food_log({
+                                    'date': view_date, 'food_name': t['name'], 'amount_desc': "Template",
+                                    'calories': t['total_calories'], 'protein': t['total_protein'],
+                                    **food_data 
+                                })
+                                st.rerun()
+                        with c_t2:
+                            if st.button("🗑️", key=f"del_tpl_{t['id']}"):
+                                dm.delete_template(t['id'])
+                                st.rerun()
                 else: st.caption("No templates yet.")
             with col_sug2:
                 st.markdown("**Recent**")
